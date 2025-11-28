@@ -5,14 +5,13 @@ import os
 import json
 import argparse
 
-def preprocess_gluon_data(data: pd.DataFrame, standardize: bool = False, log_transform: bool = False) -> dict:
+def preprocess_gluon_data(data: pd.DataFrame, standardize: bool = False) -> dict:
     """
     Preprocess the input DataFrame for GluonTS dataset generation.
 
     Parameters:
     - data: pd.DataFrame - The input data containing stock information.
     - standardize: bool - Whether to standardize the columns.
-    - log_transform: bool - Whether to apply log transformation.
 
     Returns:
     - dict: A dictionary containing datasets for each stock code.
@@ -38,7 +37,7 @@ def preprocess_gluon_data(data: pd.DataFrame, standardize: bool = False, log_tra
     # Generate datasets for each stock code
     datasets = {}
     for code in stock_codes:
-        dataset_json = generate_datasets_per_stock(cleaned_data, code, standardize, log_transform)
+        dataset_json = generate_datasets_per_stock(cleaned_data, code, standardize)
         # json dumps to file
         datasets[code] = json.loads(dataset_json)
         with open(f"gluonTS_Dataset/input/stock_{code}_dataset.json", 'w', encoding='utf-8') as f:
@@ -46,9 +45,9 @@ def preprocess_gluon_data(data: pd.DataFrame, standardize: bool = False, log_tra
 
     return datasets
 
-def main(input_path: str, standardize: bool = False, log_transform: bool = False):
+def main(input_path: str, standardize: bool = False):
     data = pd.read_csv(input_path)
-    datasets = preprocess_gluon_data(data, standardize, log_transform)
+    datasets = preprocess_gluon_data(data, standardize)
     return datasets
 
 if __name__ == "__main__":
@@ -56,7 +55,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Preprocess GluonTS data")
     parser.add_argument("input_path", type=str, help="Path to the input CSV file")
     parser.add_argument("--standardize", action="store_true", help="Whether to standardize the columns")
-    parser.add_argument("--log_transform", action="store_true", help="Whether to apply log transformation")
     args = parser.parse_args()
 
-    main(args.input_path, args.standardize, args.log_transform)
+    main(args.input_path, args.standardize)

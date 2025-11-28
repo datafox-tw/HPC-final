@@ -4,8 +4,6 @@ import numpy as np
 import pandas as pd
 import json
 import argparse
-from clipping import auto_clip_value, clipping
-from log_transformation import log_transformation
 from standardize import standardize_columns
 
 # first check stock codes we want to use
@@ -13,7 +11,7 @@ def generate_stock_code_list(data: pd.DataFrame) -> list:
     stock_codes = data['code'].unique().tolist()
     return stock_codes
 
-def generate_datasets_per_stock(data: pd.DataFrame, stock_code: int, standardize: bool = False, log_transform: bool = False) -> json:
+def generate_datasets_per_stock(data: pd.DataFrame, stock_code: int, standardize: bool = False) -> json:
     datasets = json.dumps({})
     stock_data = data[data['code'] == stock_code].copy()
 
@@ -23,15 +21,8 @@ def generate_datasets_per_stock(data: pd.DataFrame, stock_code: int, standardize
         "start": str(stock_data['date'].min())
     }
     
-    if log_transform:
-        # use log-transformed version
-        clipping_value = auto_clip_value(stock_data)
-        stock_data = clipping(stock_data, clipping_value)
-        stock_data = log_transformation(stock_data)
-        time_series["target"] = stock_data['var_true_90_log'].tolist()
-    else:
-        # for the target values, we use 'var_true_90' column
-        time_series["target"] = stock_data['var_true_90'].tolist()
+    # for the target values, we use 'var_true_90' column
+    time_series["target"] = stock_data['var_true_90'].tolist()
 
     # static covariates is the stock_data columns that only have one unique value
     DICT_DIR = "gluonTS_Dataset/static_dict"
@@ -122,7 +113,6 @@ def generate_datasets_per_stock(data: pd.DataFrame, stock_code: int, standardize
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Generate datasets for GluonTS.')
     parser.add_argument('--standardize', action='store_true', help='Standardize features')
-    parser.add_argument('--log_transform', action='store_true', help='Log transform target')
     args = parser.parse_args()
 
     # check if the output directory exists
@@ -133,7 +123,7 @@ if __name__ == "__main__":
     data = pd.read_csv(input_path)
     stock_code_list = generate_stock_code_list(data)
     for code in stock_code_list:
-        datasets_json = generate_datasets_per_stock(data, code, standardize=args.standardize, log_transform=args.log_transform)
+        datasets_json = generate_datasets_per_stock(data, code, standardize=args.standardize)
         # json dump to file
         output_path = f"gluonTS_Dataset/input/dataset_{code}.json"
         with open(output_path, 'w') as f:
