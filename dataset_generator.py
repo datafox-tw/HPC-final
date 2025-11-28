@@ -42,9 +42,11 @@ def generate_datasets_per_stock(data: pd.DataFrame, stock_code: int, standardize
         # skip alpha features
         if col.startswith('alpha'):
             continue
-        if stock_data[col].nunique() == 1:
-            # get the first value
-            raw_val = stock_data[col].iloc[0]
+        
+        # Allow industry_code to be static even if it changes (take the latest)
+        if stock_data[col].nunique() == 1 or col == 'industry_code':
+            # get the last value (most recent)
+            raw_val = stock_data[col].iloc[-1]
             if isinstance(raw_val, (np.integer, np.floating)):
                 raw_val = raw_val.item()
 
