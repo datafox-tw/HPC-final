@@ -5,3 +5,4 @@ gluonTS_Dataset
 lightning_logs
 visualization_plots
 trained_model
+*.zip
