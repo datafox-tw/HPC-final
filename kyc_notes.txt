@@ -1,0 +1,270 @@
+source .venv/bin/activate
+deepar:2017
+gluont: 2019
+pytorch-ts(gluont-revised):2021
+https://github.com/zalandoresearch/pytorch-ts
+0050 50黨股票 資料前處理 算時間 建立模型
+
+對，你這個直覺完全抓對重點了，我幫你拆開來講清楚：
+
+---
+
+## 1. 先回答你的核心問題：
+
+> 「現在的版本好像沒有用其他股票的資訊進行預測（請幫我確定）」
+
+**結論：是，現在的版本 *沒有* 用到「其他股票」的資訊來預測某一檔股票。**
+
+細節分兩塊看：
+
+### （1）現在那份 DeepAR（gluonts）code 在幹嘛？
+
+你給的 `train_deepar.py` + `evaluate_deepar.py` 做的是：
+
+* 每一個 JSON 檔就是一檔股票的 time series（＋自己的 features）
+* `feat_dynamic_real`：是**該檔股票自己的 alphas / 因子 / 價量資訊**
+* `feat_static_cat`：是該檔股票的靜態類別（比如產業、類別 ID）
+* `ListDataset(train_list, freq=freq)` → 一個 global model，
+  **用很多條「單一股票序列」一起訓練「共享參數」的 DeepAR。**
+
+這意味著：
+
+* **同一時間點，模型不會看到「其他股票的 features」**
+* 只有透過「共享參數」這個層面，間接學到市場共同的 pattern
+* **預測某檔股票時，輸入只有：它自己的 target + 它自己的 dynamic/static features**
+
+所以，如果你問得很尖銳：
+
+> 「DeepAR 有沒有真的在用 *其他股票的 alphas* 來幫忙預測這支股票？」
+
+答案是：
+👉 **沒有。只是所有股票共用同一套權重而已。**
+
+---
+
+### （2）我們剛剛設計的 Darts LSTM / GINN-0 呢？
+
+更乾脆了：
+
+* `series_true[code]` = 這一檔的 `var_true_90`
+* `series_garch[code]` = 這一檔的 `garch_var_90`
+* global LSTM 的做法是：把 `list(series_*)` 丟進去一起 train
+  → 一樣是「共享參數」，**但沒有任何 cross-sectional feature**。
+
+所以現在這一版：
+
+* **沒有用到其他股票的當期資訊**（像「同一天其他成分股的 vol/return」）
+* 只有：「多檔股票一起訓練一個模型」，學的是「共通的時間序列結構」。
+
+你的描述「每次都是使用自己的 alphas 等資訊來進行預測」——
+對 DeepAR 來說，**是的（用自己的 features）**，
+但對我們現在的 GINN-0 版本，**目前連 alphas 都還沒用上，只用自己的 GARCH / true vol**。
+
+---
+
+## 2. 原論文：一支指數 vs 你現在：46 支成分股
+
+你觀察也很準：
+
+* 論文的 GINN → 典型設定是 **對某個 index / 單一資產** 做 volatility 預測（一對一）。
+* 你們現在想做 → **對 0050 的每支成分股的 volatility 做預測（多對多）**。
+
+兩種做法可以長這樣：
+
+### 做法 A：**Global GINN-0 / GINN（多標的共享模型）**
+
+* 你用 Darts 建一個 LSTM 模型
+* 46 檔股票的序列一次丟進去 train（跟現在架構一樣）
+* 模型裡多一個「stock ID / 產業 ID」當 static covariate
+* 每一支股票只有自己的 features（自己的 alphas + 自己的 GARCH + weekday dummy …）
+
+這就是：
+
+> **多資產、但每條序列還是獨立，
+> 共享的是 model parameters，不是當期 cross-sectional 狀態。**
+
+### 做法 B：**真的用「其他股票資訊」幫忙預測**
+
+那就會變成：
+
+* feature 裡包含「同一天其他股票的 aggregated signal」
+
+  * 例：當天 0050 指數的 vol、全體平均 vol、sector vol
+  * 或 cross-sectional 排名之類
+* 或者乾脆把 **多檔股票的 vol 當成一個向量**，做 multivariate time series
+  → 這個就有點超出原論文 GINN setting，要自己設計 architecture。
+
+以現在作業時間線來看，你如果往 B 走，很容易直接猝死。
+**A 做好 + 把故事講清楚，就已經是高標完成。**
+
+---
+
+## 3. 把蔡老闆給你的 checklist，整理成一條可實作的 pipeline
+
+你貼的這段超關鍵，我直接翻成「接下來 Darts/GNN-0 要怎麼設計」：
+
+> ### # 檢查標準化流程
+>
+> * Alphas 截面Rank[-1, 1]
+> * Alphas + GARCH(Past) 時間序列Normalize[0, 1]
+> * RevIN (Darts的套件有), 主要用來做時間序列的輸入、輸出標準化
+
+### 🔧 3.1 Feature & Scaling 設計
+
+對 46 檔股票、每天 (t)：
+
+1. **Cross-sectional rank for alphas：**
+
+   * 同一天對所有股票的每一個 alpha 做截面 rank → 映射到 ([-1,1])。
+   * 這一步是「橫向」：同一天看全部股票。
+
+2. **Time-series normalize for each series：**
+
+   * 對每一檔股票、每個 feature（包含 alphas + GARCH past）做 per-series normalization（例如 min-max 到 [0,1]，或 z-score）。
+   * 這步是「縱向」：每條時間序列各自正規化。
+
+3. **RevIN：**
+
+   * 用 Darts 的 `RevIN` transformer 包住模型前後：輸入先標準化、模型輸出再逆轉標準化。
+   * 好處：可以對付 non-stationary / scale shift 問題。
+
+> 結論：**原始 GINN 是 univariate + AR/GARCH，
+> 你們可以做成「多變量 features + RevIN + GINN-0」，
+> 算是架構上的 upgrade，但論文精神還在。**
+
+---
+
+> ### # Dummy Variable
+>
+> * 確認是不是 1, 0 的方式, 不是1/2/3/4/5....
+
+### 🔢 3.2 Dummy 設計
+
+* 比如 weekday、month、regime（high/low vol regime）、產業類別
+* 一律轉成 one-hot / multi-hot dummy，比如 weekday → 5 維 0/1
+* 在 Darts 裡可以變成 `past_covariates` or `future_covariates`，
+  作為額外的 time-varying features。
+
+---
+
+> ### # Hyperparameters
+>
+> * Darts 內建 Optuna
+> * Loss Function 需要自定義, Lambda 需要Grid Search
+
+### ⚙️ 3.3 Loss / hyperparam 設計（為了真正 GINN，而不是只有 GINN-0）
+
+如果要從 GINN-0 升級到完整 GINN（double loss）：
+
+* Loss：
+  [
+  \mathcal{L} = \lambda , \text{MSE}(\hat{\sigma}^2_{t,\text{pred}}, \sigma^2_t)
+
+  * (1-\lambda), \text{MSE}(\hat{\sigma}^2_{t,\text{pred}}, \hat{\sigma}^2_{t,\text{GARCH}})
+    ]
+* 在 Darts 中寫 custom `loss_fn(y_hat, y)`，
+  y 裡面塞兩維：true σ² 跟 GARCH σ²。
+
+`lambda` 用 grid search tuning：例如 {0, 0.01, 0.1, 0.5, 0.9, 1.0}
+→ 其中 λ=0 就是 GINN-0；λ=1 就是純 data-driven LSTM。
+
+Optuna：
+
+* Darts 有 `RNNModel` 搭配 `RandomSearch`/`OptunaSearch` 的 utilities
+* 你可以把 `lambda` 也當 hyperparam 一起 tune（雖然工程上會更複雜一點）。
+
+---
+
+> ### # Model 比較
+>
+> * 能夠畫出時間序列預測的比較圖
+> * GARCH / DeepAR(RNNModel in Darts)
+
+### 📊 3.4 模型家族整理一下
+
+在你們的 final report / slides 裡，可以把模型列成：
+
+1. **GARCH baseline**
+
+   * 每檔股票使用 GARCH(1,1) 或論文中的變體
+   * 輸出 `garch_var_90`，對 `var_true_90` 做 MSE/MAE
+
+2. **DeepAR（目前 gluonTS 版）**
+
+   * input: 自己的 alphas & features
+   * global model，但 per-stock input 仍是自己的序列
+   * experimental result：只有 ~24% 的股票比 GARCH 好
+
+3. **LSTM baseline（Darts）**
+
+   * global LSTM，學 `var_true_90`
+   * input features 可以做兩版：
+
+     * (a) pure vol（univariate）
+     * (b) vol + alphas + dummy + GARCH past（multi-variate）
+
+4. **GINN-0（Darts LSTM mimicking GARCH）**
+
+   * target = `garch_var_90`
+   * evaluation vs `var_true_90`
+
+5. （如果來得及）**GINN（full）**
+
+   * double loss with λ
+   * 報告裡強調是把 financial theory (GARCH) 融合到 NN 的 loss 裡。
+
+每個模型畫出幾檔代表性股票的時序圖（GT vs model vs GARCH），
+對老師來說會非常直觀。
+
+---
+
+> ### # Features
+>
+> * 可能Alpha101 沒有用
+> * 可能Alpha102-171 沒有用
+
+### 🔍 3.5 Feature ablation / selection
+
+你們完全可以設計一個很簡單但有說服力的實驗表：
+
+* **Setting A**：只用 `garch_var_90`（+ dummy）
+* **Setting B**：加上 Alpha101
+* **Setting C**：再加 Alpha102–171
+* **Setting D**：只用 top-k 因子（例如蔡老闆另行挑的幾個）
+
+看哪個 setting 在 validation MSE / MAE 上比較好。
+這樣你們可以很坦白地說：
+
+> 「實驗結果顯示 Alpha 101/102–171 在本作業的 volatility 預測上貢獻有限 / 僅有輕微改善。」
+
+而不是只是嘴砲說「可能沒有用」。
+
+---
+
+## 4. 那接下來我會怎麼建議你動手？
+
+如果要排「下一步行動」：
+
+1. **確認目前 Darts GINN-0 版：**
+
+   * 的確是 multi-stock global model，但 per-stock input 只有自己的 vol
+   * 沒有 cross-sectional features → 先接受這個事實，當成「最小可行版本」。
+
+2. **在 GINN-0 裡先加上 minimal features：**
+
+   * 每檔股票自己的 `garch_var_90` + weekday dummy
+   * 之後再慢慢把「rank-normalized alphas」加進來當 `past_covariates`
+
+3. **把蔡老闆的 checklist 寫成你們 repo 的 `docs/model_design.md`**
+
+   * 之後你們改 code /加 feature 不會越改越亂，
+   * 老師問的時候也有條有理地回。
+
+---
+
+如果你願意，下一步我可以幫你：
+
+* 直接在我們剛剛的 `train_ginn0.py` 草稿上，幫你加上「multi-variate features + RevIN + weekday dummy」版的 skeleton，讓它更接近你跟蔡老闆的設計。
+* 或幫你寫一小段「**為什麼我們的 multi-stock GINN-0 仍然符合原論文精神，但擴展到 46 檔標的**」的報告文字。
+
+你選一個方向，我就跟你一起把那邊鑽深一點 🦊

@@ -4,7 +4,7 @@ import pandas as pd
 import os
 import json
 import argparse
-
+# start 22:11 大概三分鐘
 def preprocess_gluon_data(data: pd.DataFrame, standardize: bool = False) -> dict:
     """
     Preprocess the input DataFrame for GluonTS dataset generation.
