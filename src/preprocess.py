@@ -1,99 +1,228 @@
-import pandas as pd
-import numpy as np
 import argparse
+import pathlib
+from typing import List, Optional, Sequence, Tuple
 
-def preprocess_data(df: pd.DataFrame, target_col: str, disabled_features: list, 
-                    garch_scaling: str, use_log_target: bool) -> pd.DataFrame:
-    # 1. 移除停用的特徵欄位
+import numpy as np
+import pandas as pd
+
+
+def _load_dataframe(path: pathlib.Path) -> pd.DataFrame:
+    if path.suffix.lower() in {".pkl", ".pickle"}:
+        return pd.read_pickle(path)
+    return pd.read_csv(path, parse_dates=["date"])
+
+
+def _save_dataframe(df: pd.DataFrame, path: pathlib.Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.suffix.lower() in {".pkl", ".pickle"}:
+        df.to_pickle(path)
+    else:
+        df.to_csv(path, index=False)
+
+
+def _first_valid_position(series: pd.Series) -> Optional[int]:
+    valid_positions = np.flatnonzero(series.notna().to_numpy())
+    if len(valid_positions) == 0:
+        return None
+    return int(valid_positions[0])
+
+
+def _rank_to_unit_interval(series: pd.Series) -> pd.Series:
+    if series.shape[0] <= 1:
+        return pd.Series(0.0, index=series.index)
+    ranks = series.rank(method="average")
+    return 2 * (ranks - 1) / (len(series) - 1) - 1
+
+
+def _fill_and_scale_alphas(df: pd.DataFrame, alpha_cols: Sequence[str]) -> pd.DataFrame:
+    if not alpha_cols:
+        return df
+    filled = df.groupby("date")[list(alpha_cols)].transform(lambda col: col.fillna(col.median()).fillna(0.0))
+    df[list(alpha_cols)] = filled
+    df[list(alpha_cols)] = df.groupby("date")[list(alpha_cols)].transform(_rank_to_unit_interval).fillna(0.0)
+    return df
+
+
+def _apply_burn_in(
+    df: pd.DataFrame,
+    target_col: str,
+    garch_col: Optional[str],
+    alpha_cols: Sequence[str],
+    burn_in_target: int,
+    burn_in_garch: int,
+    burn_in_alpha: int,
+) -> Tuple[pd.DataFrame, List[str]]:
+    kept_frames: List[pd.DataFrame] = []
+    dropped_codes: List[str] = []
+    for code, group in df.groupby("code", sort=False):
+        burn_candidates = [burn_in_target]
+        if garch_col and garch_col in group.columns:
+            burn_candidates.append(burn_in_garch)
+        if alpha_cols:
+            burn_candidates.append(burn_in_alpha)
+
+        target_start = _first_valid_position(group[target_col])
+        if target_start is not None:
+            burn_candidates.append(target_start)
+        if garch_col and garch_col in group.columns:
+            garch_start = _first_valid_position(group[garch_col])
+            if garch_start is not None:
+                burn_candidates.append(garch_start)
+
+        # if alpha_cols:
+        #     alpha_ready = group[list(alpha_cols)].notna().all(axis=1)
+        #     alpha_start = _first_valid_position(alpha_ready)
+        #     if alpha_start is not None:
+        #         burn_candidates.append(alpha_start)
+
+        if alpha_cols:
+            # 因為 .notna().all(axis=1) 會把所有值都轉換成True, False
+            # _first_valid_position 中的 series.notna().to_numpy() 會全部都是 True, 回傳永遠都是 0
+            alpha_ready = group[list(alpha_cols)].notna().all(axis=1)
+            true_positions = np.flatnonzero(alpha_ready.to_numpy())
+            if len(true_positions) > 0:
+                alpha_start = int(true_positions[0])
+                burn_candidates.append(alpha_start)
+
+
+        burn_in = int(max(burn_candidates)) if burn_candidates else 0
+        trimmed = group.iloc[burn_in:].copy()
+        trimmed = trimmed.dropna(subset=[target_col] + ([garch_col] if garch_col else []))
+        if trimmed.empty:
+            dropped_codes.append(str(code))
+            continue
+        kept_frames.append(trimmed)
+    if not kept_frames:
+        return pd.DataFrame(columns=df.columns), dropped_codes
+    return pd.concat(kept_frames).sort_values(["code", "date"]), dropped_codes
+
+
+def preprocess_data(
+    df: pd.DataFrame,
+    target_col: str,
+    garch_col: str,
+    disabled_features: Sequence[str],
+    use_log_target: bool,
+    burn_in_target: int,
+    burn_in_garch: int,
+    burn_in_alpha: int,
+) -> Tuple[pd.DataFrame, List[str]]:
+    df = df.copy()
+    df["code"] = df["code"].astype(str)
+    df["date"] = pd.to_datetime(df["date"])
     if disabled_features:
-        for feat in disabled_features:
-            if feat in df.columns:
-                df.drop(columns=feat, inplace=True)
-    # 2. Alpha 補值與排名 [-1,1] 標準化
-    if 'alpha' in df.columns:
-        # 以當日中位數填補缺失值
-        df['alpha'] = df.groupby('date')['alpha'].transform(
-            lambda x: x.fillna(x.median())  # 當日所有股票alpha的中位數
-        )
-        # 對每個日期計算排名並縮放到 [-1,1]
-        def rank_to_scale(x: pd.Series) -> pd.Series:
-            if len(x) == 1:
-                # 單個值無法排名，直接設為0
-                return pd.Series(0.0, index=x.index)
-            ranks = x.rank(method='average')  # 平均名次（如有並列）
-            scaled = (ranks - 1) / (len(x) - 1) * 2 - 1
-            return scaled
-        df['alpha'] = df.groupby('date')['alpha'].transform(rank_to_scale)
-        # 填補可能出現的極端情況NaN（若某日全NaN），用0替代
-        df['alpha'] = df['alpha'].fillna(0.0)
-    # 3. GARCH 特徵縮放
-    if 'garch_pred' in df.columns:
-        if garch_scaling == 'global':
-            mu = df['garch_pred'].mean()
-            sigma = df['garch_pred'].std()
-            if pd.isna(sigma) or sigma == 0:
-                # 若sigma為0（理論上不太會發生除非數據恆定），避免除零
-                sigma = 1e-8
-            df['garch_pred'] = (df['garch_pred'] - mu) / sigma
-        elif garch_scaling == 'per_series':
-            def scale_group(x: pd.Series) -> pd.Series:
-                mu = x.mean()
-                sigma = x.std()
-                if pd.isna(sigma) or sigma == 0:
-                    sigma = 1e-8
-                return (x - mu) / sigma
-            df['garch_pred'] = df.groupby('code')['garch_pred'].transform(scale_group)
-        # 填補前面幾天可能存在的NaN（例如某些模型預熱期），用鄰近值或0
-        df['garch_pred'] = df.groupby('code')['garch_pred'].apply(
-            lambda x: x.fillna(method='ffill').fillna(method='bfill').fillna(0)
-        )
-    # 4. 目標與基準對數轉換
-    if use_log_target:
-        # 確保目標值非負再取對數，如有負值（不太可能）須先處理
-        df[target_col] = np.log1p(np.clip(df[target_col], a_min=0, a_max=None))
-        if 'garch_pred' in df.columns:
-            # GARCH預測可能也全為非負，本例中視作波動率
-            df['garch_pred'] = np.log1p(np.clip(df['garch_pred'], a_min=0, a_max=None))
+        drop_cols = [col for col in disabled_features if col in df.columns]
+        df = df.drop(columns=drop_cols)
 
-    # 5️. 營收 / 財報公布日：缺失補 0，強制轉 int
+    alpha_cols = [c for c in df.columns if c.lower().startswith("alpha")]
+    df = _fill_and_scale_alphas(df, alpha_cols)
+
     for col in ["revenue_report", "fin_report"]:
         if col in df.columns:
             df[col] = df[col].fillna(0).astype(int)
 
-    # 6️6. 產業變數：轉成字串，確保後面 one-hot 時不出問題
     if "industry_code" in df.columns:
-        df["industry_code"] = df["industry_code"].astype(str)
+        df["industry_code"] = df["industry_code"].fillna("unknown").astype(str)
 
-    return df
+    if use_log_target:
+        df[target_col] = np.log1p(np.clip(df[target_col], a_min=0, a_max=None))
+        if garch_col in df.columns:
+            df[garch_col] = np.log1p(np.clip(df[garch_col], a_min=0, a_max=None))
 
-def main():
-    parser = argparse.ArgumentParser(description="Preprocess raw data for TSMixerModel.")
-    parser.add_argument('--input', required=True, help="Path to raw input CSV data")
-    parser.add_argument('--output', required=True, help="Path to save cleaned output (csv or pkl)")
-    parser.add_argument('--disabled_features', nargs='+', help="Feature columns to remove", default=[])
-    parser.add_argument('--garch_scaling', choices=['none', 'global', 'per_series'], default='none',
-                        help="Scaling mode for garch_pred feature")
-    parser.add_argument('--use_log_target', action='store_true', help="Apply log1p transform to target and garch_pred")
-    parser.add_argument('--target_col', default='target', help="Name of the target column in data")
-    args = parser.parse_args()
-    # 讀取資料
-    if args.input.endswith('.pkl') or args.input.endswith('.pickle'):
-        df = pd.read_pickle(args.input)
-    else:
-        df = pd.read_csv(args.input, parse_dates=['date'])
-    # 資料排序（按日期）
-    df.sort_values(['code', 'date'], inplace=True)
-    # 資料預處理
-    df_clean = preprocess_data(df, target_col=args.target_col,
-                               disabled_features=args.disabled_features,
-                               garch_scaling=args.garch_scaling,
-                               use_log_target=args.use_log_target)
-    # 輸出結果
-    if args.output.endswith('.pkl') or args.output.endswith('.pickle'):
-        df_clean.to_pickle(args.output)
-    else:
-        df_clean.to_csv(args.output, index=False)
-    print(f"Preprocessing done. Output saved to {args.output}")
+    cleaned, dropped = _apply_burn_in(
+        df=df,
+        target_col=target_col,
+        garch_col=garch_col if garch_col in df.columns else None,
+        alpha_cols=alpha_cols,
+        burn_in_target=burn_in_target,
+        burn_in_garch=burn_in_garch,
+        burn_in_alpha=burn_in_alpha,
+    )
+
+    protected_cols = {target_col, "code", "date", "industry_code", garch_col}
+    all_nan_cols = [col for col in cleaned.columns if col not in protected_cols and cleaned[col].isna().all()]
+
+    if all_nan_cols:
+        cleaned = cleaned.drop(columns=all_nan_cols)
+
+    cleaned = cleaned.sort_values(["code", "date"]).reset_index(drop=True)
+    return cleaned, dropped
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Preprocess raw volatility dataset.")
+    parser.add_argument("--input", required=True, help="Path to raw CSV/PKL data.")
+    parser.add_argument("--output", required=True, help="Path to save cleaned data (CSV or PKL).")
+    parser.add_argument(
+        "--disabled_features",
+        nargs="+",
+        default=[],
+        help="Feature columns to remove before modeling.",
+    )
+    parser.add_argument(
+        "--target_col",
+        default="var_true_90",
+        help="Name of the realized volatility target column.",
+    )
+    parser.add_argument(
+        "--garch_col",
+        default="garch_var_90",
+        help="Column name for GARCH predictions.",
+    )
+    parser.add_argument(
+        "--use_log_target",
+        action="store_true",
+        help="Apply log1p transform to target and garch features.",
+    )
+    parser.add_argument(
+        "--burn_in_target",
+        type=int,
+        default=90,
+        help="Burn-in days to drop per series for the target column.",
+    )
+    parser.add_argument(
+        "--burn_in_garch",
+        type=int,
+        default=90,
+        help="Burn-in days to drop per series for the garch column.",
+    )
+    parser.add_argument(
+        "--burn_in_alpha",
+        type=int,
+        default=250,
+        help="Burn-in days to drop per series for alpha features.",
+    )
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    input_path = pathlib.Path(args.input)
+    output_path = pathlib.Path(args.output)
+
+    df_raw = _load_dataframe(input_path)
+    df_raw = df_raw.sort_values(["code", "date"])
+
+    cleaned, dropped_codes = preprocess_data(
+        df=df_raw,
+        target_col=args.target_col,
+        garch_col=args.garch_col,
+        disabled_features=args.disabled_features,
+        use_log_target=args.use_log_target,
+        burn_in_target=args.burn_in_target,
+        burn_in_garch=args.burn_in_garch,
+        burn_in_alpha=args.burn_in_alpha,
+    )
+
+    _save_dataframe(cleaned, output_path)
+
+    print(f"Preprocessing complete. Saved to {output_path}")
+    if dropped_codes:
+        print(f"Skipped {len(dropped_codes)} series with insufficient data after burn-in: {dropped_codes}")
+    nan_cols = [c for c in cleaned.columns if cleaned[c].isna().all()]
+    if nan_cols:
+        print(f"Dropped all-NaN columns: {nan_cols}")
+
 
 if __name__ == "__main__":
     main()

@@ -134,19 +134,33 @@ models/: 存放 .pth 模型
 - 收集所有 `code` → 建立 ticker one-hot（只有在 `"industry_ticker"` 模式下才會用）；
 - 將組合後的 static 向量透過 `with_static_covariates()` 附加到每條 target TimeSeries 上。
 
-**GARCH 特徵縮放：**對 GARCH 預測波動度特徵 (garch_pred) 進行標準化處理。此處提供兩種縮放選項：
+-------Depreciated----------
+# Depreciated : 後續發現GARCH預測值並不需要當成特徵
+   **GARCH 特徵縮放(Depreciated)：**對 GARCH 預測波動度特徵 (garch_pred) 進行標準化處理。此處提供兩種縮放選項：
+   **Global Scaling(Depreciated)：**以所有資產整體數據計算均值和標準差，將 garch_pred 在全域範圍內標準化。即 $z = (x - \mu_{\text{all}}) / \sigma_{\text{all}}$，將所有股票的 GARCH 值轉換成同一尺度。
+   **Per-series Scaling(Depreciated)：**以每檔股票自身的歷史均值和標準差進行標準化。**歷史均值和標準差需要嚴格遵守避免未來資料洩漏的問題，歷史均值、標準差應以合理的方式計算**。每檔股票的 GARCH 序列會被調整為該股票上的 $z$ 分數（平均為0，方差為1）。使用者可透過參數 --garch_scaling 選擇 "global" 或 "per_series" 模式（或 "none" 表示不縮放）。適當的縮放可以避免不同股票之間 GARCH 數值量級差異過大，影響模型訓練的穩定性。
+-------Depreciated----------
 
-**Global Scaling：**以所有資產整體數據計算均值和標準差，將 garch_pred 在全域範圍內標準化。即 $z = (x - \mu_{\text{all}}) / \sigma_{\text{all}}$，將所有股票的 GARCH 值轉換成同一尺度。
+-------New----------
+**GARCH 預測值處理：**
+- GARCH的預測值在本模型主要使用於計算Loss，並不把GARCH預測值當成是一個特徵。
+**GARCH波動度、Realized Volatility Log：**
+- 將所有的GARCH波動度、RV都進行Log轉換，這樣統計性質更好。
+- 需要注意GARCH的波動度也需要進行Log，這樣才會計算Loss時才會是同一個尺度。
+- 模型輸出結果時，需要將GARCH的波動度、RV都轉換回去原先的尺度。
+- 對數目標轉換(Depreciated):由於波動度（或方差）資料經常具有右偏分佈且範圍跨越數量級，我們可以啟用 USE_LOG_TARGET=True 對目標值進行對數轉換。具體做法是在資料中將目標欄位取 $\log(1+x)$（自然對數），以緩解極端值和偏態對模型的不利影響。對應地，若有使用 GARCH 預測值為基準比較，也對 GARCH 預測值做相同的 $\log(1+x)$ 轉換，確保兩者處於同一尺度上。日後在模型預測輸出時，再使用反轉換 $\exp(x) - 1$ 將結果還原回原始尺度。透過對數化處理，模型更容易學習線性關係，同時確保預測值為非負。
+**GARCH波動度、Realized Volatility 縮放**
+- GARCH波動度 **不需要進行標準化**。它主要拿來計算Loss，需要和RV有可比性。
+- RV **不需要進行標準化**。因為在Darts套件中，已經有RevIN進行標準化、反標準化。
+-------New----------
 
-**Per-series Scaling：**以每檔股票自身的歷史均值和標準差進行標準化。**歷史均值和標準差需要嚴格遵守避免未來資料洩漏的問題，歷史均值、標準差應以合理的方式計算**。每檔股票的 GARCH 序列會被調整為該股票上的 $z$ 分數（平均為0，方差為1）。使用者可透過參數 --garch_scaling 選擇 "global" 或 "per_series" 模式（或 "none" 表示不縮放）。適當的縮放可以避免不同股票之間 GARCH 數值量級差異過大，影響模型訓練的穩定性。
 
-**對數目標轉換：**由於波動度（或方差）資料經常具有右偏分佈且範圍跨越數量級，我們可以啟用 USE_LOG_TARGET=True 對目標值進行對數轉換。具體做法是在資料中將目標欄位取 $\log(1+x)$（自然對數），以緩解極端值和偏態對模型的不利影響。對應地，若有使用 GARCH 預測值為基準比較，也對 GARCH 預測值做相同的 $\log(1+x)$ 轉換，確保兩者處於同一尺度上。日後在模型預測輸出時，再使用反轉換 $\exp(x) - 1$ 將結果還原回原始尺度。透過對數化處理，模型更容易學習線性關係，同時確保預測值為非負。
 
 preprocess.py 可接受 --use_log_target 參數啟用此步驟。啟用時會對目標欄位和 garch_pred 欄位都執行 log1p 轉換，並記錄此設定以便在預測階段反轉。
 
 完成上述處理後，preprocess.py 會輸出清理轉換後的資料表（可選擇輸出為 CSV 或 pickle 格式）。其中每列包含：date、code、目標欄位（可能已取對數）、以及經處理後的協變數欄位（移除了停用特徵、填補並縮放了 alpha、縮放了 garch 等）。例如：
 
-date，code，target（可能為 log(vol)），alpha（已轉換為 [-1,1]）、garch_pred（縮放後，可能亦已取 log1p）、以及保留的其他特徵（如 log_return 等）。
+date，code，target（可能為 log(vol)），alpha（已轉換為 [-1,1]）、garch_pred（可能亦已取 log1p）、以及保留的其他特徵（如 log_return 等）。
 
 ## preprocess.py 模組參數與使用方式
 
@@ -170,12 +184,12 @@ python preprocess.py \
     --input raw_data.csv \
     --output cleaned_data.pkl \
     --disabled_features close log_return u_hat_90 \
-    --garch_scaling per_series \
+    --garch_scaling none \
     --use_log_target \
     --target_col realized_vol
 
 
-上述命令將讀取 raw_data.csv，移除 close、log_return、u_hat_90 三個欄位，對每檔股票各自標準化其 garch_pred，對 realized_vol 目標和 garch_pred 取對數，處理 alpha 後，將結果保存為 cleaned_data.pkl。
+上述命令將讀取 raw_data.csv，移除 close、log_return、u_hat_90 三個欄位，對每檔股票都不標準化其 garch_pred，對 realized_vol 目標和 garch_pred 取對數，處理 alpha 後，將結果保存為 cleaned_data.pkl。
 
 ## 時間序列資料集構建 (dataset_builder.py)
 
@@ -189,7 +203,7 @@ Darts 允許每條序列攜帶靜態協變數（時間不變的特徵）和動�
 
 靜態協變數：我們為每檔股票引入一組靜態特徵，用於標識該股票或產業。例如，我們使用股票身份的一位有效編碼（one-hot encoding）向量作為靜態特徵：48 檔股票即對應長度為 48 的向量，每檔股票在自己對應的位置為1，其餘為0。這相當於為模型提供股票的類別資訊。使用靜態特徵需要在模型中設定use_static_covariates=True，模型在訓練時會確保所有目標序列具有相同維度的靜態向量並利用它們。靜態協變數可以幫助模型識別不同序列的特性，例如區分不同股票或不同產業的波動水準。
 
-動態協變數：則包括我們在預處理後保留下來的所有時間序列特徵（除了目標值本身）。例如，alpha（已標準化）、garch_pred（已縮放/取對數）、以及可能保留的 log_return 等均作為協變變數隨時間變動。這些特徵會被作為過去協變數（past covariates）提供給模型，也就是說，在預測下一步時，模型可使用最近 90 天這些特徵的歷史值作為輸入。預設情況下沒有使用未來協變數，因為未來協變數須為已知的未來資訊（例如節假日、計畫公告等）；我們的特徵如價格或收益在未來未知，因此不作 future covariate。如 GARCH 預測值因為代表下一日的已知預測，理論上可作為 future covariate，但此處我們直接將其與目標對齊作為過去特徵使用（相當於每一天用GARCH對隔日的預測值作為當日特徵）。模型在預測時不需要未來協變數的延伸。
+動態協變數：則包括我們在預處理後保留下來的所有時間序列特徵（除了目標值本身）。例如，alpha（已標準化）、garch_pred（不縮放/取對數）、以及可能保留的 log_return 等均作為協變變數隨時間變動。這些特徵會被作為過去協變數（past covariates）提供給模型，也就是說，在預測下一步時，模型可使用最近 90 天這些特徵的歷史值作為輸入。預設情況下沒有使用未來協變數，因為未來協變數須為已知的未來資訊（例如節假日、計畫公告等）；我們的特徵如價格或收益在未來未知，因此不作 future covariate。如 GARCH 預測值因為代表下一日的已知預測，理論上可作為 future covariate，但此處我們直接將其與目標對齊作為過去特徵使用（相當於每一天用GARCH對隔日的預測值作為當日特徵）。模型在預測時不需要未來協變數的延伸。
 
 **3. 序列劃分：**腳本將每檔股票的時間序列按照訓練集、驗證集和測試集進行拆分：
 
