@@ -268,3 +268,14 @@ Optuna：
 * 或幫你寫一小段「**為什麼我們的 multi-stock GINN-0 仍然符合原論文精神，但擴展到 46 檔標的**」的報告文字。
 
 你選一個方向，我就跟你一起把那邊鑽深一點 🦊
+
+
+-------------
+1201
+今天作業 看新的內容有哪些更動
+step 1 : python3 gluon_data_preprocessor.py ./Dataset/data/ml_dataset_alpha101_volatility.csv --standardize
+gluon_data_preprocessor有：data_cleaning dataset_generator standardize
+新版本：有一個general_data_preprocessor
+把五個檔案丟到preprocess裡面
+---
+中間處理：

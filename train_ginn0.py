@@ -18,7 +18,7 @@ from darts.models import RNNModel
 from darts.metrics import mse, mae
 from sklearn.metrics import mean_squared_error, mean_absolute_error
 
-from data_cleaning import row_cleaning, generate_stock_code_list  # 用你們原本的
+from preprocess.data_cleaning import row_cleaning, generate_stock_code_list  # 用你們原本的
 
 
 # ===== 全域設定 =====

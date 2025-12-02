@@ -1,6 +1,6 @@
 # ginn0_dataset.py
 import pandas as pd
-from data_cleaning import row_cleaning, generate_stock_code_list
+from preprocess.data_cleaning import row_cleaning, generate_stock_code_list
 
 CSV_PATH = "Dataset/data/ml_dataset_alpha101_volatility.csv"
 
