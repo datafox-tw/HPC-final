@@ -5,6 +5,4 @@ lightning_logs
 visualization_plots
 trained_model
 *.zip
-.venv
-*.venv
-Dataset
+data
