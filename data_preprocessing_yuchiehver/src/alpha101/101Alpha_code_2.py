@@ -1,9 +1,10 @@
 import pandas as pd
 import numpy as np
 from scipy import stats 
+from quantopian.pipeline.data.builtin import USEquityPricing
+from quantopian.pipeline.factors import SimpleMovingAverage
 
-
- def make_factors():
+def make_factors():
         
             #  (rank(Ts_ArgMax(SignedPower(((returns < 0) ? stddev(returns, 20) : close), 2.), 5)) - 0.5)
     class Alpha1(CustomFactor):
