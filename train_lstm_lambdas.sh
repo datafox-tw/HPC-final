@@ -12,7 +12,7 @@
 #   ./train_all_lambdas.sh --nohup            # 背景執行（使用 nohup）
 #   ./train_all_lambdas.sh --parallel 4 --nohup  # 平行 + 背景執行
 # ============================================================================
-#共花費5小時多
+
 # 解析命令列參數
 PARALLEL_JOBS=1
 USE_NOHUP=false

@@ -50,6 +50,18 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="啟用後輸出預測 vs. 實際/GARCH 的折線圖與 rolling mean 圖。",
     )
+    parser.add_argument(
+        "--covariate_mode",
+        choices=["none", "lagged"],
+        default="none",
+        help="協變數使用方式：none 代表完全不用 cov；lagged 則會把 cov 往前 lag 天再傳給模型，避免使用未來資訊。",
+    )
+    parser.add_argument(
+        "--covariate_lag",
+        type=int,
+        default=1,
+        help="lagged 模式下要往前取幾天的 cov（預設 1）。",
+    )
     return parser.parse_args()
 
 
@@ -70,6 +82,25 @@ def _concat_series(parts: Sequence[Optional[TimeSeries]]) -> Optional[TimeSeries
             continue
         combined = ts if combined is None else combined.append(ts)
     return combined
+
+
+def _build_lagged_covariates(
+    series_list: Sequence[Optional[TimeSeries]], lag: int
+) -> List[Optional[TimeSeries]]:
+    lagged: List[Optional[TimeSeries]] = []
+    for ts in series_list:
+        if ts is None or lag <= 0:
+            lagged.append(ts)
+            continue
+        values = ts.values(copy=True)
+        if values.shape[0] <= lag:
+            lagged.append(None)
+            continue
+        lagged_vals = np.zeros_like(values)
+        lagged_vals[lag:] = values[:-lag]
+        lagged_vals[:lag] = 0.0
+        lagged.append(ts.with_values(lagged_vals))
+    return lagged
 
 
 def _invert_log(values: np.ndarray, use_log_target: bool) -> np.ndarray:
@@ -118,16 +149,25 @@ def main() -> None:
     else:
         plots_dir = rolling_dir = None
 
+    if args.covariate_mode == "lagged":
+        train_covs_processed = _build_lagged_covariates(train_covs, args.covariate_lag)
+        val_covs_processed = _build_lagged_covariates(val_covs, args.covariate_lag)
+        test_covs_processed = _build_lagged_covariates(test_covs, args.covariate_lag)
+    else:
+        train_covs_processed = [None] * len(train_covs)
+        val_covs_processed = [None] * len(val_covs)
+        test_covs_processed = [None] * len(test_covs)
+
     if args.split == "val":
         eval_targets = val_targets
-        eval_covs = val_covs
+        eval_covs = val_covs_processed
         history_builder = lambda idx: _concat_series([train_targets[idx], val_targets[idx]])
-        cov_builder = lambda idx: _concat_series([train_covs[idx], val_covs[idx]])
+        cov_builder = lambda idx: _concat_series([train_covs_processed[idx], val_covs_processed[idx]])
     else:
         eval_targets = test_targets
-        eval_covs = test_covs
+        eval_covs = test_covs_processed
         history_builder = lambda idx: _concat_series([train_targets[idx], val_targets[idx], test_targets[idx]])
-        cov_builder = lambda idx: _concat_series([train_covs[idx], val_covs[idx], test_covs[idx]])
+        cov_builder = lambda idx: _concat_series([train_covs_processed[idx], val_covs_processed[idx], test_covs_processed[idx]])
 
     metrics: List[Tuple[str, float, float, float, float]] = []
 
@@ -137,7 +177,7 @@ def main() -> None:
         ticker = tickers[idx] if idx < len(tickers) else f"Series_{idx}"
 
         history_series = history_builder(idx)
-        history_covariates = cov_builder(idx)
+        history_covariates = cov_builder(idx) if args.covariate_mode == "lagged" else None
         if history_series is None:
             print(f"[警告] {ticker} 缺少歷史資料，跳過。")
             continue

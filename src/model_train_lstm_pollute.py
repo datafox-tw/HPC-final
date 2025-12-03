@@ -6,7 +6,6 @@ from typing import List, Optional
 import numpy as np
 import torch
 from torch import nn
-from darts import TimeSeries
 from darts.models import RNNModel
 
 
@@ -121,43 +120,11 @@ def parse_args() -> argparse.Namespace:
         default=0.2,
         help="層間 dropout。",
     )
-    parser.add_argument(
-        "--covariate_mode",
-        choices=["none", "lagged"],
-        default="none",
-        help="LSTM 在訓練時要不要使用協變數。預設 none（完全不用，以免洩漏）；"
-        "選 lagged 會把 cov 退後 lag 天再當 future cov 使用，只提供歷史資訊。",
-    )
-    parser.add_argument(
-        "--covariate_lag",
-        type=int,
-        default=1,
-        help="lagged 模式下要延後幾天的協變數（預設 1，表示用 t-1 的 cov 預測 t）。",
-    )
     return parser.parse_args()
 
 
 def _prepare_covariates(covs: List[Optional[object]]) -> List[Optional[object]]:
     return covs if covs is not None else []
-
-
-def _build_lagged_covariates(
-    series_list: List[Optional[TimeSeries]], lag: int
-) -> List[Optional[TimeSeries]]:
-    lagged: List[Optional[TimeSeries]] = []
-    for ts in series_list:
-        if ts is None or lag <= 0:
-            lagged.append(ts)
-            continue
-        values = ts.values(copy=True)
-        if values.shape[0] <= lag:
-            lagged.append(None)
-            continue
-        lagged_vals = np.zeros_like(values)
-        lagged_vals[lag:] = values[:-lag]
-        lagged_vals[:lag] = 0.0
-        lagged.append(ts.with_values(lagged_vals))
-    return lagged
 
 
 def main() -> None:
@@ -256,28 +223,20 @@ def main() -> None:
     )
 
     has_val = any(ts is not None for ts in val_targets)
+    has_val_cov = any(cov is not None for cov in val_covs)
 
-    future_covariates = None
-    val_future_covariates = None
-    if args.covariate_mode == "lagged":
-        future_covariates = _build_lagged_covariates(train_covs, args.covariate_lag)
-        val_future_covariates = (
-            _build_lagged_covariates(val_covs, args.covariate_lag) if has_val else None
-        )
-
-    fit_kwargs = {
-        "series": train_targets,
-        "val_series": val_targets if has_val else None,
-        "epochs": args.epochs,
-        "dataloader_kwargs": {"batch_size": args.batch_size},
-        "verbose": False,
-    }
-    if future_covariates is not None:
-        fit_kwargs["future_covariates"] = future_covariates
-    if val_future_covariates is not None:
-        fit_kwargs["val_future_covariates"] = val_future_covariates
-
-    model.fit(**fit_kwargs)
+    # RNNModel 在目前 darts 版本只支援 future_covariates，不支援 past_covariates。
+    # 為了讓結構與 TSMixer 盡量一致，我們把原本給 TSMixer 的 cov 當成「已知的未來協變數」
+    # 傳入，並維持相同的 list-of-TimeSeries 介面與 GARCH 加權 loss。
+    model.fit(
+        series=train_targets,
+        future_covariates=train_covs,
+        val_series=val_targets if has_val else None,
+        val_future_covariates=val_covs if has_val_cov else None,
+        epochs=args.epochs,
+        dataloader_kwargs={"batch_size": args.batch_size},
+        verbose=False,
+    )
 
     model_path = pathlib.Path(args.model_path)
     model_path.parent.mkdir(parents=True, exist_ok=True)
