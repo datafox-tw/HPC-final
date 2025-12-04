@@ -163,6 +163,9 @@ else
     next_task=0
     finished=0
 
+    echo "開始平行執行 ${t_total} 個任務（並發數: ${PARALLEL_JOBS}）..."
+    echo ""
+
     while [[ ${finished} -lt ${t_total} ]]; do
         # 啟動新任務（直到到達並行上限）
         while [[ ${#PIDS[@]} -lt ${PARALLEL_JOBS} && ${next_task} -lt ${t_total} ]]; do
@@ -176,24 +179,36 @@ else
             echo "  啟動背景任務 PID=${pid} (${model_type}, lambda=${lambda_val})"
 
             next_task=$((next_task + 1))
-            sleep 1
+            sleep 0.5
         done
 
         # 檢查已有任務是否結束
         new_pids=()
         for pid in "${PIDS[@]}"; do
             if kill -0 "${pid}" 2>/dev/null; then
+                # 任務仍在執行
                 new_pids+=("${pid}")
             else
-                wait "${pid}" || true
+                # 任務已完成（成功或失敗都算完成）
+                wait "${pid}" 2>/dev/null || true
                 finished=$((finished + 1))
             fi
         done
         PIDS=("${new_pids[@]}")
 
-        echo "  進度: 已完成 ${finished}/${t_total}，執行中 ${#PIDS[@]}，待啟動 $((t_total - next_task))"
-        sleep 2
+        # 顯示進度
+        if [[ ${finished} -lt ${t_total} ]]; then
+            echo "  進度: 已完成 ${finished}/${t_total}，執行中 ${#PIDS[@]}，待啟動 $((t_total - next_task))"
+        fi
+
+        # 如果還有任務要執行或正在執行，稍等一下再檢查
+        if [[ ${next_task} -lt ${t_total} || ${#PIDS[@]} -gt 0 ]]; then
+            sleep 1
+        fi
     done
+    
+    echo ""
+    echo "所有任務執行完成！"
 fi
 
 END_TIME=$(date +%s)
