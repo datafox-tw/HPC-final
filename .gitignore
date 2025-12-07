@@ -15,3 +15,6 @@ Dataset_reenact_yuchi
 logs
 .vscode
 outputs
+darts_logs
+lightning_logs
+models

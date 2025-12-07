@@ -162,6 +162,7 @@ def main() -> None:
             retrain=False,
             verbose=False,
             last_points_only=True,
+            # predict_kwargs={"dataloader_kwargs": {"num_workers": 1, "persistent_workers":True}}
         )
 
         pred_vals = preds.to_dataframe().iloc[:, 0].to_numpy()
@@ -271,4 +272,7 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    import time
+    then = time.time()
     main()
+    print(round(time.time() - then, 2))
