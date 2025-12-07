@@ -1,4 +1,33 @@
-# How to reenact the result and further comparison
+# HPC期末專案
+
+## 前言
+傳統金融預測波動度時經常使用 GARCH 類等線性模型，其核心假設未來波動度僅由過去殘差、過去變異數線性與少量變數(Covariates)相關。然而，在複雜且高維的金融市場中，波動度僅由線性關係驅動的假設過於強硬，且變數的稀疏性也難以將公司的重大資訊公布、成交量、報酬率和實證上已經發現的大量潛在變數一起納入考慮。
+
+本研究為了解決實證上波動度可能發生的非線性關係與大量潛在變數，我們採用 Chen et al.(2023) 提出的 TSMixer 模型對波動度進行建模，相對於TFT, DeepAR等模型，TSMixer 是一款全利用 MLP 架構進行時間序列預測的深度學習模型，它在 2023 年是當代 state-of-the-art 模型，且在S&P500指數波動度預測中也達到SOTA地位。
+
+TSMixer 模型的好處在於 RNN, LSTM 以及 GRU 等方式並沒有辦法同時對多隻股票建模，導致模型的訓練、儲存、維護都變得相當複雜。TSMixer 也支援對多條時間序列建模共享參數組，通過共享參數組，模型可以捕捉到金融市場上普遍發生的現象，相比於對每一條時間序列都建立一個模型，這完美解決了金融市場容易過擬合的痛點。
+
+由於在台灣股票上，並沒有針對tsmixer進行波動度預測的contribution，同時在tsmixer在time-series預測上也暫時沒有相關文獻做 High performance computing 加速，儘管與基於 Transformer 的模型相比，TSMixer 相對輕量級，但其運算模式以矩陣乘法為主，使其成為 GPU 加速和高效能最佳化的理想目標。
+
+本研究對學術與實務的貢獻如下：(1) TSMixer 在 MAE/RMSE 等指標皆贏過 GARCH 模型 (2) 共享參數組對多條時間序列建模在波動度預測上是有效的 (3) 在此基礎上，進行profiling and optimization. 
+
+## 參考訓練方法
+0. source .venv/bin/activate
+1. 下載dataset (資料前處理已經搞定了但不是我搞的，但我覺得應該不用特地描述)
+2. pip install -r requirements.txt
+3. 資料前處理
+python src/preprocess.py  --input data/ml_dataset_alpha101_volatility.csv     --output data/clean.pkl  --disabled_features close log_return u_hat_90 gjrgarch_var_90 tgarch_var_90    --use_log_target     --target_col var_true_90     --garch_col garch_var_90 
+（我忘記為什麼不能塞return了 我先使用他應該可以當作獨立的new alphas）(但也不是我弄的)
+這個版本採用close 大概100秒
+
+python src/preprocess.py  --input data/ml_dataset_alpha101_volatility.csv     --output data/clean.pkl  --disabled_features close  gjrgarch_var_90 tgarch_var_90    --use_log_target     --target_col var_true_90     --garch_col garch_var_90 
+
+4. Build dataset 大概40秒
+python src/dataset_builder.py --input data/clean.pkl  --output data/ts_data.pkl --val_frac 0.2 --test_frac 0.1 --input_chunk_length 90 --static_mode ticker --target_col var_true_90 --garch_col garch_var_90 
+
+5. python src/alpha_eda_multi.py
+
+<!-- # How to reenact the result and further comparison
 ### 0. source .venv/bin/activate
 0-1. new requirements is built by pipreqs to further allocate pip dependency.
 pip install pipreqs
@@ -158,4 +187,4 @@ Lambda = 0, lstm+tsmixer, epoch=2, lr=3e-4
 
 FAQ:
 model在哪裡？
-->可以自己訓練或者跟我要我上傳雲端 因為有點多
+->可以自己訓練或者跟我要我上傳雲端 因為有點多 -->
