@@ -25,7 +25,18 @@ python src/preprocess.py  --input data/ml_dataset_alpha101_volatility.csv     --
 4. Build dataset 大概40秒
 python src/dataset_builder.py --input data/clean.pkl  --output data/ts_data.pkl --val_frac 0.2 --test_frac 0.1 --input_chunk_length 90 --static_mode ticker --target_col var_true_90 --garch_col garch_var_90 
 
-5. python src/alpha_eda_multi.py
+5. python src/alpha_eda_multi.py --data data/ml_dataset_alpha101_volatility.csv
+6. 跑最佳化參數下的profiling & benchmarking
+
+python src/model_train_ver1207.py \
+    --data Dataset/ts_data.pkl \
+    --combine_train_val \
+    --epochs 50 \
+    --lr 0.001 \
+    --hidden_size 64 \
+    --ff_size 128 \
+    --dropout 0.2 \
+    --model_path models/tsmixer_final.pth
 
 <!-- # How to reenact the result and further comparison
 ### 0. source .venv/bin/activate
